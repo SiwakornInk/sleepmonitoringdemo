@@ -1,0 +1,52 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-50 text-gray-900;
+  }
+}
+
+@layer components {
+  /* Card styles */
+  .card {
+    @apply bg-white rounded-xl shadow-sm border border-gray-100 p-6;
+  }
+  
+  .card-hover {
+    @apply card hover:shadow-md transition-shadow duration-200;
+  }
+  
+  /* Sleep stage colors */
+  .stage-wake {
+    @apply bg-wake;
+  }
+  
+  .stage-n1 {
+    @apply bg-n1;
+  }
+  
+  .stage-n2 {
+    @apply bg-n2;
+  }
+  
+  .stage-n3 {
+    @apply bg-n3;
+  }
+  
+  .stage-rem {
+    @apply bg-rem;
+  }
+  
+  /* Glass effect */
+  .glass {
+    @apply bg-white/80 backdrop-blur-sm;
+  }
+  
+  /* Sleep score gradient */
+  .sleep-score-gradient {
+    background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+  }
+}
