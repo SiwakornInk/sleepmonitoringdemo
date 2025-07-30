@@ -9,11 +9,7 @@ env/
 ENV/
 .env
 
-# Models (large files)
-*.pth
-*.pkl
-*.joblib
-*.h5
+
 
 # Database
 *.db
