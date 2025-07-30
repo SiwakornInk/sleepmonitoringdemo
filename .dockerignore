@@ -1,0 +1,47 @@
+
+# Ignore frontend completely
+frontend/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+ENV/
+.env
+
+# Git
+.git/
+.gitignore
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs
+*.md
+docs/
+
+# Tests
+tests/
+test_*.py
+
+# Large files we don't need
+*.log
+*.db
+*.sqlite3
+
+# Node stuff (if any)
+node_modules/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
