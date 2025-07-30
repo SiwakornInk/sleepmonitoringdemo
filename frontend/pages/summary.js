@@ -6,7 +6,7 @@ import SleepScore from '../components/SleepScore';
 import StageChart from '../components/StageChart';
 import ApneaStats from '../components/ApneaStats';
 import { sessionAPI } from '../services/api';
-import { Calendar, Clock, FileText } from 'lucide-react';
+import { Calendar, Clock, FileText, Download, Share2, CheckCircle, XCircle, AlertCircle, TrendingUp } from 'lucide-react';
 import { format } from 'date-fns';
 
 export default function SleepSummary() {
@@ -52,7 +52,7 @@ export default function SleepSummary() {
     return (
       <Layout>
         <div className="flex items-center justify-center h-64">
-          <div className="text-gray-500">Loading...</div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
         </div>
       </Layout>
     );
@@ -61,16 +61,15 @@ export default function SleepSummary() {
   if (!summaryData || !session) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-64">
-          <div className="text-center">
-            <div className="text-gray-500 mb-4">No session data available</div>
-            <button
-              onClick={() => router.push('/')}
-              className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-secondary"
-            >
-              Start New Session
-            </button>
-          </div>
+        <div className="flex flex-col items-center justify-center h-64 text-center">
+          <FileText className="h-16 w-16 text-gray-600 mb-4" />
+          <div className="text-gray-400 mb-6">No session data available</div>
+          <button
+            onClick={() => router.push('/')}
+            className="btn-primary"
+          >
+            Start New Session
+          </button>
         </div>
       </Layout>
     );
@@ -170,64 +169,78 @@ export default function SleepSummary() {
     <Layout>
       <div className="space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
-              <FileText className="h-6 w-6 text-primary" />
+            <h1 className="text-2xl sm:text-3xl font-bold text-white flex items-center gap-3">
+              <div className="p-3 rounded-xl bg-gradient-primary">
+                <FileText className="h-6 w-6 sm:h-7 sm:w-7 text-white" />
+              </div>
               Sleep Summary
             </h1>
-            <p className="text-gray-600 mt-1">
+            <p className="text-gray-400 mt-2">
               Detailed analysis of your sleep session
             </p>
           </div>
           
-          <div className="flex items-center gap-4 text-sm text-gray-600">
-            <div className="flex items-center gap-1">
-              <Calendar className="h-4 w-4" />
-              <span>Date: {format(new Date(summaryData.start_time), 'dd/MM/yyyy')}</span>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <div className="flex items-center gap-2 px-4 py-2 glass-card rounded-xl">
+              <Calendar className="h-4 w-4 text-primary-400" />
+              <span className="text-gray-300">{format(new Date(summaryData.start_time), 'MMM dd, yyyy')}</span>
             </div>
-            <div className="flex items-center gap-1">
-              <Clock className="h-4 w-4" />
-              <span>Time: {formatTime(summaryData.start_time)} - {formatTime(summaryData.end_time)}</span>
+            <div className="flex items-center gap-2 px-4 py-2 glass-card rounded-xl">
+              <Clock className="h-4 w-4 text-primary-400" />
+              <span className="text-gray-300">{formatTime(summaryData.start_time)} - {formatTime(summaryData.end_time)}</span>
             </div>
           </div>
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex flex-wrap gap-3">
+          <button className="btn-secondary flex items-center gap-2">
+            <Download className="h-4 w-4" />
+            Export Report
+          </button>
+          <button className="btn-secondary flex items-center gap-2">
+            <Share2 className="h-4 w-4" />
+            Share
+          </button>
         </div>
 
         {/* Main content */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Hypnogram - spans 2 columns */}
           <div className="lg:col-span-2">
-            <div className="card">
-              <h3 className="text-lg font-semibold mb-4">Sleep Stage and Sleep Apnea</h3>
+            <div className="glass-card p-6 rounded-3xl h-full">
+              <h3 className="text-lg font-semibold text-white mb-4">Sleep Pattern Analysis</h3>
               <div className="mb-6">
                 {hypnogramData.length > 0 ? (
                   <Hypnogram 
                     data={hypnogramData} 
                     showApnea={true}
-                    height={300}
+                    height={window.innerWidth < 640 ? 250 : 350}
                   />
                 ) : (
-                  <div className="h-64 flex items-center justify-center text-gray-400">
+                  <div className="h-64 flex items-center justify-center text-gray-500">
                     No epoch data available
                   </div>
                 )}
               </div>
               
               {/* Sleep metrics */}
-              <div className="grid grid-cols-3 gap-4 pt-4 border-t">
-                <div className="text-center">
-                  <div className="text-sm text-gray-500 mb-1">Duration</div>
-                  <div className="text-xl font-bold">{formatDuration(summaryData.duration_minutes)}</div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 rounded-xl bg-white/5">
+                <div className="text-center p-4 rounded-lg hover:bg-white/5 transition-colors">
+                  <div className="text-xs text-gray-400 mb-2">Total Duration</div>
+                  <div className="text-2xl font-bold text-white">{formatDuration(summaryData.duration_minutes)}</div>
                 </div>
-                <div className="text-center">
-                  <div className="text-sm text-gray-500 mb-1">Sleep Efficiency</div>
-                  <div className="text-xl font-bold">
+                <div className="text-center p-4 rounded-lg hover:bg-white/5 transition-colors">
+                  <div className="text-xs text-gray-400 mb-2">Sleep Efficiency</div>
+                  <div className="text-2xl font-bold text-primary-400">
                     {Math.round(((summaryData.duration_minutes - summaryData.wake_minutes) / summaryData.duration_minutes) * 100)}%
                   </div>
                 </div>
-                <div className="text-center">
-                  <div className="text-sm text-gray-500 mb-1">Sleep Latency</div>
-                  <div className="text-xl font-bold">{calculateSleepLatency()}m</div>
+                <div className="text-center p-4 rounded-lg hover:bg-white/5 transition-colors">
+                  <div className="text-xs text-gray-400 mb-2">Sleep Latency</div>
+                  <div className="text-2xl font-bold text-white">{calculateSleepLatency()}m</div>
                 </div>
               </div>
             </div>
@@ -260,43 +273,50 @@ export default function SleepSummary() {
           />
           
           {/* Summary Card */}
-          <div className="card">
-            <h3 className="text-lg font-semibold mb-4">Summary</h3>
+          <div className="glass-card p-6 rounded-3xl">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+              <TrendingUp className="h-5 w-5 text-primary-400" />
+              Sleep Assessment
+            </h3>
             
             <div className="space-y-4">
-              <div>
-                <div className="text-sm text-gray-500 mb-1">Overall Assessment</div>
-                <div className="text-lg font-medium">
+              <div className="p-4 rounded-xl bg-gradient-to-r from-primary/10 to-secondary/10 border border-primary/20">
+                <div className="text-sm font-medium text-gray-300 mb-2">Overall Quality</div>
+                <div className="text-base text-white">
                   {assessment.overall}
                 </div>
               </div>
               
-              <div className="space-y-2 text-sm">
+              <div className="space-y-3">
                 {assessment.points.map((point, index) => (
-                  <div key={index} className="flex items-start gap-2">
-                    <div className={`w-2 h-2 rounded-full mt-1 ${
-                      point.status === 'good' ? 'bg-green-500' :
-                      point.status === 'okay' ? 'bg-yellow-500' :
-                      'bg-red-500'
-                    }`}></div>
-                    <span>{point.text}</span>
+                  <div key={index} className="flex items-start gap-3">
+                    <div className="mt-0.5">
+                      {point.status === 'good' ? (
+                        <CheckCircle className="h-5 w-5 text-green-400" />
+                      ) : point.status === 'okay' ? (
+                        <AlertCircle className="h-5 w-5 text-yellow-400" />
+                      ) : (
+                        <XCircle className="h-5 w-5 text-red-400" />
+                      )}
+                    </div>
+                    <span className="text-sm text-gray-300">{point.text}</span>
                   </div>
                 ))}
               </div>
               
               {summaryData.ahi >= 5 && (
-                <div className="pt-4 border-t">
-                  <div className="text-xs text-gray-500">
-                    Consider consulting a sleep specialist for your sleep apnea symptoms.
-                  </div>
+                <div className="p-3 rounded-lg bg-orange-500/10 border border-orange-500/20">
+                  <p className="text-xs text-orange-300">
+                    💡 Consider consulting a sleep specialist for your apnea symptoms.
+                  </p>
                 </div>
               )}
               
               {summaryData.sleep_score < 60 && (
-                <div className="pt-4 border-t">
-                  <div className="text-xs text-gray-500">
-                    Your sleep quality needs improvement. Consider reviewing your sleep habits.
-                  </div>
+                <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
+                  <p className="text-xs text-yellow-300">
+                    💡 Try maintaining a consistent sleep schedule and creating a relaxing bedtime routine.
+                  </p>
                 </div>
               )}
             </div>
