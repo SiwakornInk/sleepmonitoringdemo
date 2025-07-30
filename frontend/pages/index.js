@@ -18,6 +18,8 @@ export default function RealTimeMonitoring() {
   const [startTime, setStartTime] = useState(null);
   const [currentTime, setCurrentTime] = useState(null);
   const [mounted, setMounted] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const [lastUpdateTime, setLastUpdateTime] = useState(null);
   
   // SHHS data options
   const [useRealData, setUseRealData] = useState(false);
@@ -106,6 +108,7 @@ export default function RealTimeMonitoring() {
   const handleStartMonitoring = async () => {
     try {
       console.log('Starting monitoring...');
+      setConnectionStatus('connecting');
       
       // Start session
       const sessionData = await sessionAPI.start(useRealData, selectedSubject || null);
@@ -124,57 +127,68 @@ export default function RealTimeMonitoring() {
         currentAHI: 0,
         hypnogramData: []
       });
+      setLastUpdateTime(null);
       
-      // Small delay to ensure state is updated
-      setTimeout(() => {
-        // Start WebSocket connection
-        console.log('Creating WebSocket monitor...');
-        monitorRef.current = new RealtimeMonitor(sessionData.session_id, (update) => {
-          console.log('Received update in component:', update);
+      // Create WebSocket connection
+      console.log('Creating WebSocket monitor...');
+      const monitor = new RealtimeMonitor(
+        sessionData.session_id, 
+        // onUpdate callback
+        (update) => {
+          console.log('Received update:', update);
+          
+          // Handle connection confirmation
+          if (update.type === 'connected') {
+            console.log('WebSocket connection confirmed');
+            return;
+          }
+          
+          setLastUpdateTime(new Date());
           
           // Update state with received data
           setCurrentData(prev => {
-            console.log('Previous data:', prev);
-            
             // Create new hypnogram entry
             const newEntry = {
               stage: getStageNumber(update.current_stage),
               isApnea: update.is_apnea
             };
             
-            // Create completely new array to ensure React detects change
+            // Create new array
             const newHypnogramData = [...prev.hypnogramData, newEntry];
-            console.log('New hypnogram data length:', newHypnogramData.length);
             
-            // Return new state object
-            const newState = {
-              currentStage: update.current_stage,
-              totalEpochs: update.total_epochs,
-              stageCounts: { ...update.stage_counts },
-              apneaCount: update.apnea_count,
-              currentAHI: update.current_ahi,
+            // Return new state
+            return {
+              currentStage: update.current_stage || 'Wake',
+              totalEpochs: update.total_epochs || 0,
+              stageCounts: update.stage_counts || { Wake: 0, N1: 0, N2: 0, N3: 0, REM: 0 },
+              apneaCount: update.apnea_count || 0,
+              currentAHI: update.current_ahi || 0,
               hypnogramData: newHypnogramData
             };
-            
-            console.log('New state:', newState);
-            return newState;
           });
-        });
-        
-        monitorRef.current.connect();
-        console.log('WebSocket connect called');
-      }, 100);
+        },
+        // onConnectionChange callback
+        (status) => {
+          console.log('Connection status changed:', status);
+          setConnectionStatus(status);
+        }
+      );
+      
+      monitorRef.current = monitor;
+      monitor.connect();
       
     } catch (error) {
       console.error('Error starting monitoring:', error);
       alert('Failed to start monitoring: ' + error.message);
       setIsMonitoring(false);
+      setConnectionStatus('error');
     }
   };
 
   const handleStopMonitoring = async () => {
     console.log('Stopping monitoring...');
     setIsMonitoring(false);
+    setConnectionStatus('disconnected');
     
     // Disconnect WebSocket first
     if (monitorRef.current) {
@@ -204,10 +218,15 @@ export default function RealTimeMonitoring() {
     };
   }, []);
 
-  // Debug: Log when hypnogram data changes
-  useEffect(() => {
-    console.log('Hypnogram data updated, length:', currentData.hypnogramData.length);
-  }, [currentData.hypnogramData]);
+  // Format time since last update
+  const getTimeSinceUpdate = () => {
+    if (!lastUpdateTime) return 'No data yet';
+    const diff = new Date() - lastUpdateTime;
+    const seconds = Math.floor(diff / 1000);
+    if (seconds < 5) return 'Just now';
+    if (seconds < 60) return `${seconds}s ago`;
+    return `${Math.floor(seconds / 60)}m ago`;
+  };
 
   // Don't render time-sensitive content until mounted
   if (!mounted) {
@@ -233,30 +252,60 @@ export default function RealTimeMonitoring() {
             </p>
           </div>
           
-          <button
-            onClick={isMonitoring ? handleStopMonitoring : handleStartMonitoring}
-            disabled={false}
-            className={`
-              flex items-center gap-3 px-6 py-3 rounded-xl font-medium
-              transition-all duration-300 transform hover:scale-105
-              ${isMonitoring 
-                ? 'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white shadow-lg shadow-red-500/30' 
-                : 'btn-primary'
-              }
-            `}
-          >
-            {isMonitoring ? (
-              <>
-                <Square className="h-5 w-5" />
-                Stop Monitoring
-              </>
-            ) : (
-              <>
-                <Play className="h-5 w-5" />
-                Start Monitoring
-              </>
+          <div className="flex items-center gap-4">
+            {/* Connection status indicator */}
+            {isMonitoring && (
+              <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm
+                ${connectionStatus === 'connected' 
+                  ? 'bg-green-500/20 border border-green-500/30' 
+                  : connectionStatus === 'connecting'
+                  ? 'bg-yellow-500/20 border border-yellow-500/30'
+                  : 'bg-red-500/20 border border-red-500/30'
+                }`}>
+                {connectionStatus === 'connected' ? (
+                  <>
+                    <Wifi className="h-4 w-4 text-green-400 animate-pulse" />
+                    <span className="text-green-400">Connected</span>
+                  </>
+                ) : connectionStatus === 'connecting' ? (
+                  <>
+                    <Wifi className="h-4 w-4 text-yellow-400 animate-pulse" />
+                    <span className="text-yellow-400">Connecting...</span>
+                  </>
+                ) : (
+                  <>
+                    <WifiOff className="h-4 w-4 text-red-400" />
+                    <span className="text-red-400">Disconnected</span>
+                  </>
+                )}
+              </div>
             )}
-          </button>
+            
+            <button
+              onClick={isMonitoring ? handleStopMonitoring : handleStartMonitoring}
+              disabled={false}
+              className={`
+                flex items-center gap-3 px-6 py-3 rounded-xl font-medium
+                transition-all duration-300 transform hover:scale-105
+                ${isMonitoring 
+                  ? 'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white shadow-lg shadow-red-500/30' 
+                  : 'btn-primary'
+                }
+              `}
+            >
+              {isMonitoring ? (
+                <>
+                  <Square className="h-5 w-5" />
+                  Stop Monitoring
+                </>
+              ) : (
+                <>
+                  <Play className="h-5 w-5" />
+                  Start Monitoring
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Data source selection */}
@@ -365,10 +414,15 @@ export default function RealTimeMonitoring() {
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-white">Sleep Stage and Sleep Apnea</h3>
                 {isMonitoring && (
-                  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-green-500/20 
-                    border border-green-500/30">
-                    <Wifi className="h-4 w-4 text-green-400 animate-pulse" />
-                    <span className="text-sm text-green-400">Live</span>
+                  <div className="flex items-center gap-4">
+                    <div className="text-xs text-gray-400">
+                      Last update: {getTimeSinceUpdate()}
+                    </div>
+                    <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-green-500/20 
+                      border border-green-500/30">
+                      <Wifi className="h-4 w-4 text-green-400 animate-pulse" />
+                      <span className="text-sm text-green-400">Live</span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -386,6 +440,9 @@ export default function RealTimeMonitoring() {
                         <Activity className="h-12 w-12 mx-auto mb-4 text-primary-400 animate-pulse" />
                         <div className="text-lg mb-2">Waiting for data...</div>
                         <div className="text-sm">Sleep analysis will begin shortly</div>
+                        {connectionStatus === 'connecting' && (
+                          <div className="text-xs mt-2 text-yellow-400">Establishing connection...</div>
+                        )}
                       </div>
                     ) : (
                       <div className="text-center">
@@ -423,7 +480,7 @@ export default function RealTimeMonitoring() {
                       <Activity className="h-4 w-4" />
                       Total Epochs
                     </span>
-                    <span className="font-semibold text-white">{currentData.totalEpochs}</span>
+                    <span className="font-semibold text-white">{currentData.totalEpochs || 0}</span>
                   </div>
                 </div>
               </div>
@@ -439,11 +496,13 @@ export default function RealTimeMonitoring() {
                 <div className="space-y-3">
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-gray-400">Total Events</span>
-                    <span className="text-xl font-bold text-orange-400">{currentData.apneaCount}</span>
+                    <span className="text-xl font-bold text-orange-400">{currentData.apneaCount || 0}</span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-gray-400">Current AHI</span>
-                    <span className="text-xl font-bold text-orange-400">{currentData.currentAHI.toFixed(1)}</span>
+                    <span className="text-xl font-bold text-orange-400">
+                      {currentData.currentAHI ? currentData.currentAHI.toFixed(1) : '0.0'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -534,10 +593,23 @@ export default function RealTimeMonitoring() {
               {currentData.totalEpochs > 0 && (
                 <div className="mt-4 pt-4 border-t border-white/10 flex items-center justify-between">
                   <span className="text-sm text-gray-400">Total epochs</span>
-                  <span className="text-sm font-semibold text-white">{currentData.totalEpochs}</span>
+                  <span className="text-sm font-semibold text-white">{currentData.totalEpochs || 0}</span>
                 </div>
               )}
             </div>
+
+            {/* Debug info - only show in development */}
+            {process.env.NODE_ENV === 'development' && isMonitoring && (
+              <div className="glass-card p-4 rounded-xl text-xs">
+                <h4 className="font-semibold text-white mb-2">Debug Info</h4>
+                <div className="space-y-1 text-gray-400">
+                  <div>Connection: {connectionStatus}</div>
+                  <div>Epochs received: {currentData.totalEpochs}</div>
+                  <div>Last update: {lastUpdateTime ? lastUpdateTime.toLocaleTimeString() : 'Never'}</div>
+                  <div>Session ID: {sessionId || 'None'}</div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

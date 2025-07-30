@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import asyncio
@@ -8,8 +9,9 @@ import numpy as np
 from typing import List, Dict, Optional
 import logging
 import os
+import traceback
 
-from database import engine, get_db
+from database import engine, get_db, SessionLocal
 from models import Base, SleepSession, SleepEpoch, WeeklySummary
 from schemas import (
     EpochData, PredictionResponse, SessionSummary, 
@@ -20,7 +22,10 @@ from data_simulator import DataSimulator
 from shhs_data_loader import SHHSDataLoader  # New import
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Create tables
@@ -32,7 +37,7 @@ app = FastAPI(title="Sleep Monitoring API", version="1.0.0")
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,7 +45,6 @@ app.add_middleware(
 
 # Initialize managers
 model_manager = ModelManager()
-data_simulator = DataSimulator()
 
 # Initialize SHHS data loader if path exists
 SHHS_PATH = os.getenv("SHHS_PATH", "D:/SHHS")
@@ -60,17 +64,23 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket, session_id: str):
         await websocket.accept()
         self.active_connections[session_id] = websocket
+        logger.info(f"WebSocket connected for session {session_id}")
 
     def disconnect(self, session_id: str):
         if session_id in self.active_connections:
             del self.active_connections[session_id]
+            logger.info(f"WebSocket disconnected for session {session_id}")
 
     async def send_to_session(self, session_id: str, message: dict):
         if session_id in self.active_connections:
             try:
                 await self.active_connections[session_id].send_json(message)
-            except:
-                pass
+                logger.debug(f"Sent message to session {session_id}")
+            except Exception as e:
+                logger.error(f"Error sending message to session {session_id}: {e}")
+                # Remove disconnected client
+                if "WebSocket" in str(e) or "closed" in str(e):
+                    self.disconnect(session_id)
 
 manager = ConnectionManager()
 
@@ -135,6 +145,8 @@ async def start_session(
     db.commit()
     db.refresh(session)
     
+    logger.info(f"Session {session_id} started successfully, is_active: {session.is_active}")
+    
     return {
         "session_id": session_id,
         "start_time": session.start_time,
@@ -145,6 +157,8 @@ async def start_session(
 @app.post("/api/session/{session_id}/end")
 async def end_session(session_id: str, db: Session = Depends(get_db)):
     """End an active sleep session and calculate summary"""
+    logger.info(f"Ending session {session_id}")
+    
     session = db.query(SleepSession).filter(
         SleepSession.session_id == session_id
     ).first()
@@ -155,6 +169,7 @@ async def end_session(session_id: str, db: Session = Depends(get_db)):
     # Mark session as inactive IMMEDIATELY
     session.is_active = False
     db.commit()
+    logger.info(f"Session {session_id} marked as inactive")
     
     # Calculate summary statistics
     epochs = db.query(SleepEpoch).filter(
@@ -306,160 +321,202 @@ async def get_weekly_summary(db: Session = Depends(get_db)):
     )
 
 @app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str, db: Session = Depends(get_db)):
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket for real-time monitoring"""
-    await manager.connect(websocket, session_id)
+    logger.info(f"WebSocket endpoint called for session {session_id}")
     
-    # Check if we're using real SHHS data
-    session = db.query(SleepSession).filter(
-        SleepSession.session_id == session_id
-    ).first()
-    
-    if not session:
-        await websocket.close()
-        return
-    
-    using_real_data = session and session.user_id != "demo_user" and shhs_loader is not None
-    
-    # Reset data simulator for new session
-    if not using_real_data:
-        data_simulator.reset_state()  # Reset all tracking
-        logger.info(f"Starting new demo session with fresh simulator state")
+    # Get database session
+    db = SessionLocal()
     
     try:
+        # Connect WebSocket
+        await manager.connect(websocket, session_id)
+        
+        # Check if session exists
+        session = db.query(SleepSession).filter(
+            SleepSession.session_id == session_id
+        ).first()
+        
+        if not session:
+            logger.error(f"Session {session_id} not found")
+            await websocket.close(code=1008, reason="Session not found")
+            return
+        
+        logger.info(f"Session {session_id} found, is_active: {session.is_active}")
+        
+        # Check if we're using real SHHS data
+        using_real_data = session.user_id != "demo_user" and shhs_loader is not None
+        
+        # Create a new data simulator instance for this session
+        data_simulator = DataSimulator()
+        data_simulator.reset_state()
+        logger.info(f"Data simulator created for session {session_id}")
+        
+        # Send initial connection confirmation
+        await manager.send_to_session(session_id, {"type": "connected", "message": "WebSocket connected"})
+        
+        # Start monitoring loop
         epoch_number = 0
         stage_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
         apnea_count = 0
         
+        logger.info(f"Starting monitoring loop for session {session_id}")
+        
+        # Create a task to handle incoming messages (like heartbeat)
+        async def handle_incoming():
+            try:
+                while True:
+                    data = await websocket.receive_json()
+                    if data.get("type") == "ping":
+                        await websocket.send_json({"type": "pong"})
+            except WebSocketDisconnect:
+                pass
+            except Exception:
+                pass
+        
+        # Start incoming message handler
+        incoming_task = asyncio.create_task(handle_incoming())
+        
         while True:
-            # Check if session is still active
-            db.refresh(session)
-            if not session.is_active:
-                logger.info(f"Session {session_id} has been ended, stopping WebSocket")
-                break
-            
-            # Wait - MUCH SHORTER for demo mode
-            if using_real_data:
-                await asyncio.sleep(2)  # Keep 2 seconds for real data
-            else:
-                # For demo mode, make it much faster
-                if epoch_number < 20:
-                    await asyncio.sleep(0.5)  # Very fast for first 20 epochs
-                elif epoch_number < 50:
-                    await asyncio.sleep(1)    # Fast for next 30 epochs
-                else:
-                    await asyncio.sleep(2)    # Normal speed after that
-            
-            # Check again after sleep
-            db.refresh(session)
-            if not session.is_active:
-                logger.info(f"Session {session_id} has been ended, stopping WebSocket")
-                break
-            
-            if using_real_data:
-                logger.info("Getting SHHS epoch data...")
-                # Get real SHHS data
-                epoch_data = shhs_loader.get_epoch_data()
-                
-                if epoch_data is None:
-                    # No more data
-                    logger.info("Reached end of SHHS data")
+            try:
+                # Check if session is still active
+                db.refresh(session)
+                if not session.is_active:
+                    logger.info(f"Session {session_id} is no longer active, stopping")
                     break
                 
-                eeg_signal = epoch_data['eeg_signal']
-                hr_signal = epoch_data['hr_signal']
-                
-                # Use actual annotations if not using models
-                if model_manager.sleep_stage_model and model_manager.apnea_model:
-                    stage, stage_probs = model_manager.predict_sleep_stage(eeg_signal)
-                    is_apnea, apnea_prob = model_manager.predict_apnea(eeg_signal, hr_signal)
-                else:
-                    # Use ground truth from SHHS
-                    stage = epoch_data['sleep_stage']
-                    is_apnea = epoch_data['is_apnea']
-                    stage_probs = {SleepStage.get_name(i): (1.0 if i == stage else 0.0) 
-                                   for i in range(5)}
-                    apnea_prob = 0.9 if is_apnea else 0.1
-                
-            else:
-                # Generate simulated signals - THIS NOW RETURNS stage and is_apnea!
-                eeg_signal, hr_signal, stage, is_apnea = data_simulator.generate_epoch_data()
-                
-                # Make predictions or simulate
-                if model_manager.sleep_stage_model and model_manager.apnea_model:
-                    # Use models if available
-                    predicted_stage, stage_probs = model_manager.predict_sleep_stage(eeg_signal)
-                    predicted_apnea, apnea_prob = model_manager.predict_apnea(eeg_signal, hr_signal)
+                # Generate or get data
+                if using_real_data and shhs_loader:
+                    logger.info("Getting SHHS epoch data...")
+                    epoch_data = shhs_loader.get_epoch_data()
                     
-                    # For demo, we trust the simulator's stage but could use model predictions
-                    # stage = predicted_stage  # Uncomment to use model predictions
-                    # is_apnea = predicted_apnea
+                    if epoch_data is None:
+                        logger.info("Reached end of SHHS data")
+                        break
+                    
+                    eeg_signal = epoch_data['eeg_signal']
+                    hr_signal = epoch_data['hr_signal']
+                    
+                    # Use actual annotations if not using models
+                    if model_manager.sleep_stage_model and model_manager.apnea_model:
+                        stage, stage_probs = model_manager.predict_sleep_stage(eeg_signal)
+                        is_apnea, apnea_prob = model_manager.predict_apnea(eeg_signal, hr_signal)
+                    else:
+                        # Use ground truth from SHHS
+                        stage = epoch_data['sleep_stage']
+                        is_apnea = epoch_data['is_apnea']
+                        stage_probs = {SleepStage.get_name(i): (1.0 if i == stage else 0.0) 
+                                       for i in range(5)}
+                        apnea_prob = 0.9 if is_apnea else 0.1
                 else:
-                    # Demo mode - use simulated values
-                    stage_probs = data_simulator.simulate_stage_probs(stage)
-                    apnea_prob = 0.8 if is_apnea else 0.2
-            
-            # Update counts
-            stage_counts[stage] += 1
-            if is_apnea:
-                apnea_count += 1
-            
-            # Save to database
-            epoch = SleepEpoch(
-                session_id=session_id,
-                epoch_number=epoch_number,
-                timestamp=datetime.now(),
-                sleep_stage=stage,
-                sleep_stage_prob=stage_probs,
-                is_apnea=is_apnea,
-                apnea_prob=apnea_prob
-            )
-            db.add(epoch)
-            db.commit()
-            
-            # Calculate current AHI
-            total_hours = (epoch_number + 1) * 0.5 / 60
-            current_ahi = apnea_count / total_hours if total_hours > 0 else 0
-            
-            # Send update to client
-            update = RealtimeUpdate(
-                session_id=session_id,
-                epoch_number=epoch_number,
-                timestamp=datetime.now(),
-                current_stage=SleepStage.get_name(stage),
-                is_apnea=is_apnea,
-                total_epochs=epoch_number + 1,
-                stage_counts={
-                    "Wake": stage_counts[0],
-                    "N1": stage_counts[1],
-                    "N2": stage_counts[2],
-                    "N3": stage_counts[3],
-                    "REM": stage_counts[4]
-                },
-                apnea_count=apnea_count,
-                current_ahi=current_ahi
-            )
-            
-            # DETAILED LOGGING with apnea info
-            stage_name = update.current_stage
-            apnea_status = "WITH APNEA" if is_apnea else "no apnea"
-            logger.info(f"Epoch {epoch_number}: Stage={stage_name}, {apnea_status}, Total_apneas={apnea_count}, AHI={current_ahi:.1f}")
-            
-            await manager.send_to_session(session_id, update.model_dump())
-            
-            epoch_number += 1
-            
-            # Optional: Auto-stop after many epochs in demo mode
-            if not using_real_data and epoch_number >= 200:
-                logger.info(f"Demo mode: Reached {epoch_number} epochs, stopping")
+                    # Generate simulated data
+                    logger.debug(f"Generating simulated data for epoch {epoch_number}")
+                    eeg_signal, hr_signal, stage, is_apnea = data_simulator.generate_epoch_data()
+                    
+                    # Make predictions or simulate
+                    if model_manager.sleep_stage_model and model_manager.apnea_model:
+                        # Use models if available
+                        predicted_stage, stage_probs = model_manager.predict_sleep_stage(eeg_signal)
+                        predicted_apnea, apnea_prob = model_manager.predict_apnea(eeg_signal, hr_signal)
+                        
+                        # For demo, we trust the simulator's stage but could use model predictions
+                        # stage = predicted_stage  # Uncomment to use model predictions
+                        # is_apnea = predicted_apnea
+                    else:
+                        # Demo mode - use simulated values
+                        stage_probs = data_simulator.simulate_stage_probs(stage)
+                        apnea_prob = 0.8 if is_apnea else 0.2
+                
+                # Update counts
+                stage_counts[stage] += 1
+                if is_apnea:
+                    apnea_count += 1
+                
+                # Save to database
+                epoch = SleepEpoch(
+                    session_id=session_id,
+                    epoch_number=epoch_number,
+                    timestamp=datetime.now(),
+                    sleep_stage=stage,
+                    sleep_stage_prob=stage_probs,
+                    is_apnea=is_apnea,
+                    apnea_prob=apnea_prob
+                )
+                db.add(epoch)
+                db.commit()
+                
+                # Calculate current AHI
+                total_hours = (epoch_number + 1) * 0.5 / 60
+                current_ahi = apnea_count / total_hours if total_hours > 0 else 0
+                
+                # Send update to client
+                update_data = {
+                    "session_id": session_id,
+                    "epoch_number": epoch_number,
+                    "timestamp": datetime.now().isoformat(),  # Convert to ISO string
+                    "current_stage": SleepStage.get_name(stage),
+                    "is_apnea": is_apnea,
+                    "total_epochs": epoch_number + 1,
+                    "stage_counts": {
+                        "Wake": stage_counts[0],
+                        "N1": stage_counts[1],
+                        "N2": stage_counts[2],
+                        "N3": stage_counts[3],
+                        "REM": stage_counts[4]
+                    },
+                    "apnea_count": apnea_count,
+                    "current_ahi": current_ahi
+                }
+                
+                # Log and send update
+                stage_name = update_data["current_stage"]
+                apnea_status = "WITH APNEA" if is_apnea else "no apnea"
+                logger.info(f"Epoch {epoch_number}: Stage={stage_name}, {apnea_status}, Total_apneas={apnea_count}, AHI={current_ahi:.1f}")
+                
+                # Check WebSocket state before sending
+                if session_id not in manager.active_connections:
+                    logger.warning(f"WebSocket disconnected for session {session_id}, stopping")
+                    break
+                
+                await manager.send_to_session(session_id, update_data)
+                
+                epoch_number += 1
+                
+                # Wait before next epoch
+                if using_real_data:
+                    await asyncio.sleep(2)  # 2 seconds for real data
+                else:
+                    # For demo mode, make it much faster
+                    if epoch_number < 22:
+                        await asyncio.sleep(0.5)  # Very fast for first 20 epochs
+                    elif epoch_number < 50:
+                        await asyncio.sleep(7)    # Fast for next 30 epochs
+                    else:
+                        await asyncio.sleep(2)    # Normal speed after that
+                
+                # Optional: Auto-stop after many epochs in demo mode
+                if not using_real_data and epoch_number >= 200:
+                    logger.info(f"Demo mode: Reached {epoch_number} epochs, stopping")
+                    break
+                    
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected for session {session_id}")
                 break
-            
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for session {session_id}")
+            except Exception as e:
+                logger.error(f"Error in monitoring loop for session {session_id}: {e}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                # Continue the loop despite errors
+                await asyncio.sleep(1)
+                
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error for session {session_id}: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
     finally:
+        # Cancel incoming handler task
+        if 'incoming_task' in locals():
+            incoming_task.cancel()
         manager.disconnect(session_id)
+        db.close()
         logger.info(f"WebSocket connection closed for session {session_id}")
 
 if __name__ == "__main__":

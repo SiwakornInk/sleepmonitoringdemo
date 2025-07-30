@@ -48,20 +48,29 @@ export const getSubjects = async () => {
   return response.data;
 };
 
-// WebSocket Connection - FIXED VERSION
+// WebSocket Connection - IMPROVED VERSION
 export class RealtimeMonitor {
-  constructor(sessionId, onUpdate) {
+  constructor(sessionId, onUpdate, onConnectionChange) {
     this.sessionId = sessionId;
     this.onUpdate = onUpdate;
+    this.onConnectionChange = onConnectionChange;
     this.ws = null;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
     this.reconnectDelay = 1000;
+    this.heartbeatInterval = null;
+    this.lastPong = null;
+    this.connectionCheckInterval = null;
   }
   
   connect() {
     const wsUrl = `${WS_BASE_URL}/ws/${this.sessionId}`;
     console.log('Connecting to WebSocket:', wsUrl);
+    
+    // Update connection status
+    if (this.onConnectionChange) {
+      this.onConnectionChange('connecting');
+    }
     
     try {
       this.ws = new WebSocket(wsUrl);
@@ -69,13 +78,32 @@ export class RealtimeMonitor {
       this.ws.onopen = () => {
         console.log('WebSocket connected successfully');
         this.reconnectAttempts = 0;
+        
+        // Update connection status
+        if (this.onConnectionChange) {
+          this.onConnectionChange('connected');
+        }
+        
+        // Start heartbeat to keep connection alive
+        this.startHeartbeat();
+        
+        // Send initial message to trigger data flow
+        this.send({ type: 'ping' });
       };
       
       this.ws.onmessage = (event) => {
         console.log('WebSocket message received:', event.data);
+        this.lastPong = Date.now();
+        
         try {
           const data = JSON.parse(event.data);
           console.log('Parsed data:', data);
+          
+          // Handle different message types
+          if (data.type === 'pong') {
+            // Heartbeat response
+            return;
+          }
           
           // Call the update callback
           if (this.onUpdate && typeof this.onUpdate === 'function') {
@@ -88,10 +116,23 @@ export class RealtimeMonitor {
       
       this.ws.onerror = (error) => {
         console.error('WebSocket error:', error);
+        
+        // Update connection status
+        if (this.onConnectionChange) {
+          this.onConnectionChange('error');
+        }
       };
       
       this.ws.onclose = (event) => {
         console.log('WebSocket disconnected:', event.code, event.reason);
+        
+        // Stop heartbeat
+        this.stopHeartbeat();
+        
+        // Update connection status
+        if (this.onConnectionChange) {
+          this.onConnectionChange('disconnected');
+        }
         
         // Try to reconnect if not intentionally closed
         if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
@@ -105,13 +146,63 @@ export class RealtimeMonitor {
       };
     } catch (error) {
       console.error('Error creating WebSocket:', error);
+      
+      // Update connection status
+      if (this.onConnectionChange) {
+        this.onConnectionChange('error');
+      }
     }
   }
   
   disconnect() {
+    console.log('Disconnecting WebSocket...');
+    
+    // Stop heartbeat
+    this.stopHeartbeat();
+    
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
       this.ws = null;
+    }
+    
+    // Update connection status
+    if (this.onConnectionChange) {
+      this.onConnectionChange('disconnected');
+    }
+  }
+  
+  send(data) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(data));
+    }
+  }
+  
+  startHeartbeat() {
+    // Send heartbeat every 30 seconds
+    this.heartbeatInterval = setInterval(() => {
+      if (this.isConnected()) {
+        this.send({ type: 'ping' });
+      }
+    }, 30000);
+    
+    // Check connection health every 10 seconds
+    this.connectionCheckInterval = setInterval(() => {
+      if (this.lastPong && Date.now() - this.lastPong > 60000) {
+        console.warn('No response from server for 60 seconds, reconnecting...');
+        this.ws.close();
+      }
+    }, 10000);
+  }
+  
+  stopHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    
+    if (this.connectionCheckInterval) {
+      clearInterval(this.connectionCheckInterval);
+      this.connectionCheckInterval = null;
     }
   }
   
