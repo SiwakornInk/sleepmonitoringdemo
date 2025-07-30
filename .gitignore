@@ -68,3 +68,6 @@ processed_data_cache/
 *.npz
 *.png
 *.pdf
+
+# files
+scripts
