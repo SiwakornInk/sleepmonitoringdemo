@@ -83,103 +83,105 @@ export default function Hypnogram({ data, showApnea = true, height = 200 }) {
   };
 
   return (
-    <div className="w-full chart-container p-4">
-      <ResponsiveContainer width="100%" height={height}>
-        <ComposedChart 
-          data={chartData}
-          margin={{ top: 5, right: 5, left: 5, bottom: 5 }}
-        >
-          {/* Gradient definitions */}
-          <defs>
-            <linearGradient id="sleepGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#8B5CF6" stopOpacity={0.3}/>
-              <stop offset="95%" stopColor="#6366F1" stopOpacity={0.1}/>
-            </linearGradient>
-            
-            {Object.entries(STAGE_COLORS).map(([stage, color]) => (
-              <linearGradient key={stage} id={`stage${stage}Gradient`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={color} stopOpacity={0.4}/>
-                <stop offset="95%" stopColor={color} stopOpacity={0.1}/>
+    <div className="w-full">
+      <div className="chart-container px-2 py-3">
+        <ResponsiveContainer width="100%" height={height}>
+          <ComposedChart 
+            data={chartData}
+            margin={{ top: 5, right: 5, left: 5, bottom: 5 }}
+          >
+            {/* Gradient definitions */}
+            <defs>
+              <linearGradient id="sleepGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#8B5CF6" stopOpacity={0.3}/>
+                <stop offset="95%" stopColor="#6366F1" stopOpacity={0.1}/>
               </linearGradient>
-            ))}
-          </defs>
-          
-          <CartesianGrid 
-            strokeDasharray="3 3" 
-            stroke="rgba(255,255,255,0.05)" 
-            vertical={false}
-          />
-          
-          <XAxis 
-            dataKey="time"
-            tickFormatter={formatXAxis}
-            stroke="rgba(255,255,255,0.5)"
-            fontSize={12}
-            tickLine={false}
-            axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
-          />
-          
-          <YAxis 
-            domain={[0, 4]}
-            ticks={[0, 1, 2, 3, 4]}
-            tickFormatter={(value) => STAGE_LABELS[4 - value]}
-            stroke="rgba(255,255,255,0.5)"
-            fontSize={12}
-            width={60}
-            tickLine={false}
-            axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
-          />
-          
-          <Tooltip 
-            content={<CustomTooltip />}
-            cursor={{ stroke: 'rgba(139, 92, 246, 0.3)', strokeWidth: 1 }}
-          />
-          
-          {/* Area fill under the line */}
-          <Area
-            type="stepAfter"
-            dataKey="stageInverted"
-            fill="url(#sleepGradient)"
-            stroke="none"
-          />
-          
-          {/* Main sleep stage line */}
-          <Line 
-            type="stepAfter"
-            dataKey="stageInverted"
-            stroke="url(#gradientLine)"
-            strokeWidth={3}
-            dot={<CustomDot />}
-            animationDuration={1500}
-            animationEasing="ease-out"
-          />
-          
-          {/* Gradient for line */}
-          <defs>
-            <linearGradient id="gradientLine" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#8B5CF6" />
-              <stop offset="50%" stopColor="#6366F1" />
-              <stop offset="100%" stopColor="#3B82F6" />
-            </linearGradient>
-          </defs>
-        </ComposedChart>
-      </ResponsiveContainer>
+              
+              {Object.entries(STAGE_COLORS).map(([stage, color]) => (
+                <linearGradient key={stage} id={`stage${stage}Gradient`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={color} stopOpacity={0.4}/>
+                  <stop offset="95%" stopColor={color} stopOpacity={0.1}/>
+                </linearGradient>
+              ))}
+            </defs>
+            
+            <CartesianGrid 
+              strokeDasharray="3 3" 
+              stroke="rgba(255,255,255,0.05)" 
+              vertical={false}
+            />
+            
+            <XAxis 
+              dataKey="time"
+              tickFormatter={formatXAxis}
+              stroke="rgba(255,255,255,0.5)"
+              fontSize={12}
+              tickLine={false}
+              axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+            />
+            
+            <YAxis 
+              domain={[0, 4]}
+              ticks={[0, 1, 2, 3, 4]}
+              tickFormatter={(value) => STAGE_LABELS[4 - value]}
+              stroke="rgba(255,255,255,0.5)"
+              fontSize={12}
+              width={60}
+              tickLine={false}
+              axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+            />
+            
+            <Tooltip 
+              content={<CustomTooltip />}
+              cursor={{ stroke: 'rgba(139, 92, 246, 0.3)', strokeWidth: 1 }}
+            />
+            
+            {/* Area fill under the line */}
+            <Area
+              type="stepAfter"
+              dataKey="stageInverted"
+              fill="url(#sleepGradient)"
+              stroke="none"
+            />
+            
+            {/* Main sleep stage line */}
+            <Line 
+              type="stepAfter"
+              dataKey="stageInverted"
+              stroke="url(#gradientLine)"
+              strokeWidth={3}
+              dot={<CustomDot />}
+              animationDuration={1500}
+              animationEasing="ease-out"
+            />
+            
+            {/* Gradient for line */}
+            <defs>
+              <linearGradient id="gradientLine" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#8B5CF6" />
+                <stop offset="50%" stopColor="#6366F1" />
+                <stop offset="100%" stopColor="#3B82F6" />
+              </linearGradient>
+            </defs>
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
       
       {/* Legend */}
-      <div className="flex flex-wrap items-center justify-center gap-4 mt-4 text-xs">
+      <div className="flex flex-wrap items-center justify-center gap-3 mt-2 pb-1 text-xs">
         {Object.entries(STAGE_LABELS).map(([stage, label]) => (
-          <div key={stage} className="flex items-center gap-2">
+          <div key={stage} className="flex items-center gap-1.5">
             <div 
-              className="w-3 h-3 rounded-full"
+              className="w-2.5 h-2.5 rounded-full"
               style={{ backgroundColor: STAGE_COLORS[stage] }}
             ></div>
-            <span className="text-gray-400">{label}</span>
+            <span className="text-[11px] text-gray-400">{label}</span>
           </div>
         ))}
         {showApnea && (
-          <div className="flex items-center gap-2 ml-4">
-            <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-            <span className="text-gray-400">Apnea Event</span>
+          <div className="flex items-center gap-1.5 ml-3">
+            <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></div>
+            <span className="text-[11px] text-gray-400">Apnea Event</span>
           </div>
         )}
       </div>

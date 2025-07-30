@@ -411,7 +411,7 @@ export default function RealTimeMonitoring() {
           <div className="lg:col-span-2 space-y-6">
             {/* Hypnogram card */}
             <div className="glass-card p-6 rounded-3xl">
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-3">
                 <h3 className="text-lg font-semibold text-white">Sleep Stage and Sleep Apnea</h3>
                 {isMonitoring && (
                   <div className="flex items-center gap-4">
@@ -426,33 +426,31 @@ export default function RealTimeMonitoring() {
                   </div>
                 )}
               </div>
-              <div className="h-64 sm:h-80">
-                {currentData.hypnogramData.length > 0 ? (
-                  <Hypnogram 
-                    data={currentData.hypnogramData} 
-                    showApnea={true}
-                    height={window.innerWidth < 640 ? 250 : 320}
-                  />
-                ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-gray-500">
-                    {isMonitoring ? (
-                      <div className="text-center">
-                        <Activity className="h-12 w-12 mx-auto mb-4 text-primary-400 animate-pulse" />
-                        <div className="text-lg mb-2">Waiting for data...</div>
-                        <div className="text-sm">Sleep analysis will begin shortly</div>
-                        {connectionStatus === 'connecting' && (
-                          <div className="text-xs mt-2 text-yellow-400">Establishing connection...</div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="text-center">
-                        <Moon className="h-12 w-12 mx-auto mb-4 text-gray-600" />
-                        <div className="text-lg">Start monitoring to begin</div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+              {currentData.hypnogramData.length > 0 ? (
+                <Hypnogram 
+                  data={currentData.hypnogramData} 
+                  showApnea={true}
+                  height={window.innerWidth < 640 ? 220 : 260}
+                />
+              ) : (
+                <div className="h-56 sm:h-64 flex flex-col items-center justify-center text-gray-500">
+                  {isMonitoring ? (
+                    <div className="text-center">
+                      <Activity className="h-12 w-12 mx-auto mb-4 text-primary-400 animate-pulse" />
+                      <div className="text-lg mb-2">Waiting for data...</div>
+                      <div className="text-sm">Sleep analysis will begin shortly</div>
+                      {connectionStatus === 'connecting' && (
+                        <div className="text-xs mt-2 text-yellow-400">Establishing connection...</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-center">
+                      <Moon className="h-12 w-12 mx-auto mb-4 text-gray-600" />
+                      <div className="text-lg">Start monitoring to begin</div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Status cards */}
