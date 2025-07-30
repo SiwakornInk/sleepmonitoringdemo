@@ -55,19 +55,19 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_origin_regex="https://.*\.vercel\.app"  # Allow all Vercel preview deployments
+    allow_origin_regex="https://.*\\.vercel\\.app"  # Allow all Vercel preview deployments
 )
 
 # Initialize managers
 model_manager = ModelManager()
 
-# Initialize SHHS data loader if path exists
+# Initialize SHHS data loader - ใช้ shhs_subset เป็น default
 SHHS_PATH = os.getenv("SHHS_PATH", "shhs_subset")
 shhs_loader = None
 if os.path.exists(SHHS_PATH):
     try:
         shhs_loader = SHHSDataLoader(SHHS_PATH)
-        logger.info("SHHS data loader initialized")
+        logger.info(f"SHHS data loader initialized from: {SHHS_PATH}")
     except Exception as e:
         logger.warning(f"Could not initialize SHHS data loader: {e}")
 
@@ -116,7 +116,7 @@ async def startup_event():
 async def health_check():
     """Health check endpoint for Railway"""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
-
+    
 # API Endpoints
 @app.get("/")
 async def root():
@@ -124,7 +124,8 @@ async def root():
         "message": "Sleep Monitoring API",
         "status": "running",
         "shhs_data_available": shhs_loader is not None,
-        "environment": os.getenv("ENVIRONMENT", "development")
+        "shhs_path": SHHS_PATH,
+        "environment": os.getenv("ENVIRONMENT", "production")
     }
 
 @app.get("/api/subjects")
@@ -344,11 +345,12 @@ async def get_weekly_summary(db: Session = Depends(get_db)):
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """WebSocket for real-time monitoring"""
+    """WebSocket for real-time monitoring with improved disconnect handling"""
     logger.info(f"WebSocket endpoint called for session {session_id}")
     
     # Get database session
     db = SessionLocal()
+    monitoring_active = True
     
     try:
         # Connect WebSocket
@@ -381,30 +383,57 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         epoch_number = 0
         stage_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
         apnea_count = 0
+        last_heartbeat = asyncio.get_event_loop().time()
+        heartbeat_timeout = 60  # seconds - ถ้าไม่ได้รับ heartbeat ใน 60 วินาที = disconnect
         
         logger.info(f"Starting monitoring loop for session {session_id}")
         
-        # Create a task to handle incoming messages (like heartbeat)
+        # Create a task to handle incoming messages (heartbeat and disconnect detection)
         async def handle_incoming():
+            nonlocal monitoring_active, last_heartbeat
             try:
-                while True:
-                    data = await websocket.receive_json()
-                    if data.get("type") == "ping":
-                        await websocket.send_json({"type": "pong"})
-            except WebSocketDisconnect:
-                pass
-            except Exception:
-                pass
+                while monitoring_active:
+                    try:
+                        # Wait for message with timeout
+                        data = await asyncio.wait_for(websocket.receive_json(), timeout=5.0)
+                        if data.get("type") == "ping":
+                            last_heartbeat = asyncio.get_event_loop().time()
+                            await websocket.send_json({"type": "pong"})
+                            logger.debug(f"Received heartbeat from session {session_id}")
+                    except asyncio.TimeoutError:
+                        # Check if heartbeat timed out
+                        if asyncio.get_event_loop().time() - last_heartbeat > heartbeat_timeout:
+                            logger.warning(f"Heartbeat timeout for session {session_id}")
+                            monitoring_active = False
+                            break
+                    except WebSocketDisconnect:
+                        logger.info(f"WebSocket disconnected by client for session {session_id}")
+                        monitoring_active = False
+                        break
+                    except Exception as e:
+                        logger.error(f"Error in incoming handler: {e}")
+                        monitoring_active = False
+                        break
+            except Exception as e:
+                logger.error(f"Fatal error in incoming handler: {e}")
+                monitoring_active = False
         
         # Start incoming message handler
         incoming_task = asyncio.create_task(handle_incoming())
         
-        while True:
+        while monitoring_active:
             try:
                 # Check if session is still active
                 db.refresh(session)
                 if not session.is_active:
                     logger.info(f"Session {session_id} is no longer active, stopping")
+                    monitoring_active = False
+                    break
+                
+                # Check WebSocket state
+                if session_id not in manager.active_connections:
+                    logger.warning(f"WebSocket not in active connections for session {session_id}")
+                    monitoring_active = False
                     break
                 
                 # Generate or get data
@@ -414,6 +443,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     
                     if epoch_data is None:
                         logger.info("Reached end of SHHS data")
+                        monitoring_active = False
                         break
                     
                     eeg_signal = epoch_data['eeg_signal']
@@ -475,7 +505,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 update_data = {
                     "session_id": session_id,
                     "epoch_number": epoch_number,
-                    "timestamp": datetime.now().isoformat(),  # Convert to ISO string
+                    "timestamp": datetime.now().isoformat(),
                     "current_stage": SleepStage.get_name(stage),
                     "is_apnea": is_apnea,
                     "total_epochs": epoch_number + 1,
@@ -495,12 +525,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 apnea_status = "WITH APNEA" if is_apnea else "no apnea"
                 logger.info(f"Epoch {epoch_number}: Stage={stage_name}, {apnea_status}, Total_apneas={apnea_count}, AHI={current_ahi:.1f}")
                 
-                # Check WebSocket state before sending
-                if session_id not in manager.active_connections:
-                    logger.warning(f"WebSocket disconnected for session {session_id}, stopping")
+                # Try to send update
+                try:
+                    await manager.send_to_session(session_id, update_data)
+                except Exception as e:
+                    logger.error(f"Failed to send update: {e}")
+                    monitoring_active = False
                     break
-                
-                await manager.send_to_session(session_id, update_data)
                 
                 epoch_number += 1
                 
@@ -519,24 +550,90 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 # Optional: Auto-stop after many epochs in demo mode
                 if not using_real_data and epoch_number >= 200:
                     logger.info(f"Demo mode: Reached {epoch_number} epochs, stopping")
+                    monitoring_active = False
                     break
                     
             except WebSocketDisconnect:
                 logger.info(f"WebSocket disconnected for session {session_id}")
+                monitoring_active = False
                 break
             except Exception as e:
                 logger.error(f"Error in monitoring loop for session {session_id}: {e}")
                 logger.error(f"Traceback: {traceback.format_exc()}")
-                # Continue the loop despite errors
-                await asyncio.sleep(1)
+                monitoring_active = False
+                break
                 
     except Exception as e:
         logger.error(f"WebSocket error for session {session_id}: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
     finally:
+        # IMPORTANT: End the session when WebSocket disconnects
+        logger.info(f"Cleaning up session {session_id}")
+        
         # Cancel incoming handler task
         if 'incoming_task' in locals():
             incoming_task.cancel()
+            try:
+                await incoming_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Mark session as inactive
+        try:
+            session = db.query(SleepSession).filter(
+                SleepSession.session_id == session_id
+            ).first()
+            if session and session.is_active:
+                logger.info(f"Auto-ending session {session_id} due to disconnect")
+                session.is_active = False
+                session.end_time = datetime.now()
+                
+                # Calculate summary if we have epochs
+                epochs = db.query(SleepEpoch).filter(
+                    SleepEpoch.session_id == session_id
+                ).all()
+                
+                if epochs:
+                    # Calculate stage durations
+                    stage_counts_final = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+                    apnea_count_final = 0
+                    
+                    for epoch in epochs:
+                        stage_counts_final[epoch.sleep_stage] += 1
+                        if epoch.is_apnea:
+                            apnea_count_final += 1
+                    
+                    # Convert to minutes (each epoch is 30 seconds)
+                    session.wake_duration = stage_counts_final[0] * 0.5
+                    session.n1_duration = stage_counts_final[1] * 0.5
+                    session.n2_duration = stage_counts_final[2] * 0.5
+                    session.n3_duration = stage_counts_final[3] * 0.5
+                    session.rem_duration = stage_counts_final[4] * 0.5
+                    
+                    session.total_duration_minutes = len(epochs) * 0.5
+                    session.apnea_events = apnea_count_final
+                    session.ahi_index = (apnea_count_final / (session.total_duration_minutes / 60)) if session.total_duration_minutes > 0 else 0
+                    
+                    # Calculate sleep score
+                    total_sleep = session.n1_duration + session.n2_duration + session.n3_duration + session.rem_duration
+                    sleep_efficiency = (total_sleep / session.total_duration_minutes) if session.total_duration_minutes > 0 else 0
+                    deep_sleep_ratio = (session.n3_duration / total_sleep) if total_sleep > 0 else 0
+                    rem_ratio = (session.rem_duration / total_sleep) if total_sleep > 0 else 0
+                    
+                    score = int(
+                        sleep_efficiency * 40 +
+                        deep_sleep_ratio * 30 +
+                        rem_ratio * 20 +
+                        max(0, 10 - session.ahi_index)
+                    )
+                    session.sleep_score = max(0, min(100, score))
+                
+                db.commit()
+                logger.info(f"Session {session_id} auto-ended successfully")
+        except Exception as e:
+            logger.error(f"Error auto-ending session: {e}")
+        
+        # Disconnect from manager
         manager.disconnect(session_id)
         db.close()
         logger.info(f"WebSocket connection closed for session {session_id}")

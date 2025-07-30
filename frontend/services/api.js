@@ -48,7 +48,7 @@ export const getSubjects = async () => {
   return response.data;
 };
 
-// WebSocket Connection - IMPROVED VERSION
+// WebSocket Connection - IMPROVED WITH HEARTBEAT
 export class RealtimeMonitor {
   constructor(sessionId, onUpdate, onConnectionChange) {
     this.sessionId = sessionId;
@@ -59,8 +59,7 @@ export class RealtimeMonitor {
     this.maxReconnectAttempts = 5;
     this.reconnectDelay = 1000;
     this.heartbeatInterval = null;
-    this.lastPong = null;
-    this.connectionCheckInterval = null;
+    this.isIntentionallyClosed = false;
   }
   
   connect() {
@@ -78,6 +77,7 @@ export class RealtimeMonitor {
       this.ws.onopen = () => {
         console.log('WebSocket connected successfully');
         this.reconnectAttempts = 0;
+        this.isIntentionallyClosed = false;
         
         // Update connection status
         if (this.onConnectionChange) {
@@ -86,14 +86,10 @@ export class RealtimeMonitor {
         
         // Start heartbeat to keep connection alive
         this.startHeartbeat();
-        
-        // Send initial message to trigger data flow
-        this.send({ type: 'ping' });
       };
       
       this.ws.onmessage = (event) => {
         console.log('WebSocket message received:', event.data);
-        this.lastPong = Date.now();
         
         try {
           const data = JSON.parse(event.data);
@@ -101,7 +97,13 @@ export class RealtimeMonitor {
           
           // Handle different message types
           if (data.type === 'pong') {
-            // Heartbeat response
+            // Heartbeat response - ignore
+            console.log('Received pong');
+            return;
+          }
+          
+          if (data.type === 'connected') {
+            console.log('Connection confirmed by server');
             return;
           }
           
@@ -135,7 +137,9 @@ export class RealtimeMonitor {
         }
         
         // Try to reconnect if not intentionally closed
-        if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
+        if (!this.isIntentionallyClosed && 
+            event.code !== 1000 && 
+            this.reconnectAttempts < this.maxReconnectAttempts) {
           this.reconnectAttempts++;
           console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
           
@@ -156,6 +160,7 @@ export class RealtimeMonitor {
   
   disconnect() {
     console.log('Disconnecting WebSocket...');
+    this.isIntentionallyClosed = true;
     
     // Stop heartbeat
     this.stopHeartbeat();
@@ -181,28 +186,19 @@ export class RealtimeMonitor {
     // Send heartbeat every 30 seconds
     this.heartbeatInterval = setInterval(() => {
       if (this.isConnected()) {
+        console.log('Sending heartbeat ping');
         this.send({ type: 'ping' });
       }
-    }, 30000);
+    }, 30000); // 30 seconds
     
-    // Check connection health every 10 seconds
-    this.connectionCheckInterval = setInterval(() => {
-      if (this.lastPong && Date.now() - this.lastPong > 60000) {
-        console.warn('No response from server for 60 seconds, reconnecting...');
-        this.ws.close();
-      }
-    }, 10000);
+    // Send first heartbeat immediately
+    this.send({ type: 'ping' });
   }
   
   stopHeartbeat() {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
-    }
-    
-    if (this.connectionCheckInterval) {
-      clearInterval(this.connectionCheckInterval);
-      this.connectionCheckInterval = null;
     }
   }
   
