@@ -16,7 +16,8 @@ export default function RealTimeMonitoring() {
     hypnogramData: []
   });
   const [startTime, setStartTime] = useState(null);
-  const [currentTime, setCurrentTime] = useState(new Date());
+  const [currentTime, setCurrentTime] = useState(null); // Changed to null initially
+  const [mounted, setMounted] = useState(false); // Add mounted state
   
   // SHHS data options
   const [useRealData, setUseRealData] = useState(false);
@@ -25,6 +26,12 @@ export default function RealTimeMonitoring() {
   const [dataSourceAvailable, setDataSourceAvailable] = useState(false);
   
   const monitorRef = useRef(null);
+
+  // Set mounted state
+  useEffect(() => {
+    setMounted(true);
+    setCurrentTime(new Date());
+  }, []);
 
   // Check if SHHS data is available
   useEffect(() => {
@@ -44,20 +51,24 @@ export default function RealTimeMonitoring() {
       }
     };
     
-    checkDataSource();
-  }, []);
+    if (mounted) {
+      checkDataSource();
+    }
+  }, [mounted]);
 
   // Update current time every second
   useEffect(() => {
+    if (!mounted) return;
+    
     const timer = setInterval(() => {
       setCurrentTime(new Date());
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [mounted]);
 
   // Calculate duration
   const getDuration = () => {
-    if (!startTime) return '00:00:00';
+    if (!startTime || !currentTime) return '00:00:00';
     const diff = currentTime - new Date(startTime);
     const hours = Math.floor(diff / 3600000);
     const minutes = Math.floor((diff % 3600000) / 60000);
@@ -83,8 +94,11 @@ export default function RealTimeMonitoring() {
 
   const handleStartMonitoring = async () => {
     try {
+      console.log('Starting monitoring...');
+      
       // Start session
       const sessionData = await sessionAPI.start(useRealData, selectedSubject || null);
+      console.log('Session started:', sessionData);
       
       setSessionId(sessionData.session_id);
       setStartTime(sessionData.start_time);
@@ -100,27 +114,45 @@ export default function RealTimeMonitoring() {
         hypnogramData: []
       });
       
-      // Start WebSocket connection - FIXED
-      monitorRef.current = new RealtimeMonitor(sessionData.session_id, (update) => {
-        // Update state with received data
-        setCurrentData(prev => {
-          const newHypnogramData = [...prev.hypnogramData, {
-            stage: getStageNumber(update.current_stage),
-            isApnea: update.is_apnea
-          }];
+      // Small delay to ensure state is updated
+      setTimeout(() => {
+        // Start WebSocket connection
+        console.log('Creating WebSocket monitor...');
+        monitorRef.current = new RealtimeMonitor(sessionData.session_id, (update) => {
+          console.log('Received update in component:', update);
           
-          return {
-            currentStage: update.current_stage,
-            totalEpochs: update.total_epochs,
-            stageCounts: update.stage_counts,
-            apneaCount: update.apnea_count,
-            currentAHI: update.current_ahi,
-            hypnogramData: newHypnogramData
-          };
+          // Update state with received data
+          setCurrentData(prev => {
+            console.log('Previous data:', prev);
+            
+            // Create new hypnogram entry
+            const newEntry = {
+              stage: getStageNumber(update.current_stage),
+              isApnea: update.is_apnea
+            };
+            
+            // Create completely new array to ensure React detects change
+            const newHypnogramData = [...prev.hypnogramData, newEntry];
+            console.log('New hypnogram data length:', newHypnogramData.length);
+            
+            // Return new state object
+            const newState = {
+              currentStage: update.current_stage,
+              totalEpochs: update.total_epochs,
+              stageCounts: { ...update.stage_counts },
+              apneaCount: update.apnea_count,
+              currentAHI: update.current_ahi,
+              hypnogramData: newHypnogramData
+            };
+            
+            console.log('New state:', newState);
+            return newState;
+          });
         });
-      });
-      
-      monitorRef.current.connect();
+        
+        monitorRef.current.connect();
+        console.log('WebSocket connect called');
+      }, 100);
       
     } catch (error) {
       console.error('Error starting monitoring:', error);
@@ -130,6 +162,9 @@ export default function RealTimeMonitoring() {
   };
 
   const handleStopMonitoring = async () => {
+    console.log('Stopping monitoring...');
+    setIsMonitoring(false);
+    
     // Disconnect WebSocket first
     if (monitorRef.current) {
       monitorRef.current.disconnect();
@@ -147,9 +182,26 @@ export default function RealTimeMonitoring() {
         alert('Error stopping session: ' + error.message);
       }
     }
-    
-    setIsMonitoring(false);
   };
+
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      if (monitorRef.current) {
+        monitorRef.current.disconnect();
+      }
+    };
+  }, []);
+
+  // Debug: Log when hypnogram data changes
+  useEffect(() => {
+    console.log('Hypnogram data updated, length:', currentData.hypnogramData.length);
+  }, [currentData.hypnogramData]);
+
+  // Don't render time-sensitive content until mounted
+  if (!mounted) {
+    return <Layout><div className="flex items-center justify-center h-64">Loading...</div></Layout>;
+  }
 
   return (
     <Layout>
@@ -168,6 +220,7 @@ export default function RealTimeMonitoring() {
           
           <button
             onClick={isMonitoring ? handleStopMonitoring : handleStartMonitoring}
+            disabled={false}
             className={`
               flex items-center gap-2 px-6 py-3 rounded-lg font-medium
               transition-all duration-200 shadow-md hover:shadow-lg
@@ -255,7 +308,15 @@ export default function RealTimeMonitoring() {
           <div className="lg:col-span-2 space-y-6">
             {/* Hypnogram card */}
             <div className="card">
-              <h3 className="text-lg font-semibold mb-4">Sleep Stage and Sleep Apnea</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold">Sleep Stage and Sleep Apnea</h3>
+                {isMonitoring && (
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <span className="text-sm text-gray-500">Recording</span>
+                  </div>
+                )}
+              </div>
               <div className="h-64">
                 {currentData.hypnogramData.length > 0 ? (
                   <Hypnogram 
@@ -265,7 +326,14 @@ export default function RealTimeMonitoring() {
                   />
                 ) : (
                   <div className="h-full flex items-center justify-center text-gray-400">
-                    {isMonitoring ? 'Waiting for data...' : 'Start monitoring to see data'}
+                    {isMonitoring ? (
+                      <div className="text-center">
+                        <div className="animate-pulse mb-2">Waiting for data...</div>
+                        <div className="text-sm">Data updates every few seconds</div>
+                      </div>
+                    ) : (
+                      'Start monitoring to see data'
+                    )}
                   </div>
                 )}
               </div>
@@ -334,16 +402,20 @@ export default function RealTimeMonitoring() {
               <div className="space-y-3">
                 <div>
                   <div className="text-sm text-gray-500">Current Date</div>
-                  <div className="text-2xl font-bold">{currentTime.toLocaleDateString()}</div>
+                  <div className="text-2xl font-bold">
+                    {currentTime ? currentTime.toLocaleDateString() : '--/--/----'}
+                  </div>
                 </div>
                 <div>
                   <div className="text-sm text-gray-500">Current Time</div>
-                  <div className="text-2xl font-bold">{currentTime.toLocaleTimeString()}</div>
+                  <div className="text-2xl font-bold">
+                    {currentTime ? currentTime.toLocaleTimeString() : '--:--:--'}
+                  </div>
                 </div>
                 {sessionId && (
                   <div className="pt-3 border-t">
                     <div className="text-sm text-gray-500">Session ID</div>
-                    <div className="text-xs font-mono bg-gray-100 p-2 rounded mt-1">
+                    <div className="text-xs font-mono bg-gray-100 p-2 rounded mt-1 break-all">
                       {sessionId}
                     </div>
                   </div>
@@ -355,33 +427,43 @@ export default function RealTimeMonitoring() {
             <div className="card">
               <h3 className="font-semibold mb-4">Sleep Stages</h3>
               <div className="space-y-3">
-                {Object.entries(currentData.stageCounts).map(([stage, count]) => (
-                  <div key={stage}>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-medium">{stage}</span>
-                      <span className="text-sm text-gray-600">
-                        {Math.floor(count * 0.5)}m
-                      </span>
+                {Object.entries(currentData.stageCounts).map(([stage, count]) => {
+                  const percentage = currentData.totalEpochs > 0 
+                    ? Math.round((count / currentData.totalEpochs) * 100)
+                    : 0;
+                  
+                  return (
+                    <div key={stage}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-medium">{stage}</span>
+                        <span className="text-sm text-gray-600">
+                          {Math.floor(count * 0.5)}m ({percentage}%)
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full transition-all duration-500 ${
+                            stage === 'Wake' ? 'bg-wake' :
+                            stage === 'N1' ? 'bg-n1' :
+                            stage === 'N2' ? 'bg-n2' :
+                            stage === 'N3' ? 'bg-n3' :
+                            'bg-rem'
+                          }`}
+                          style={{ 
+                            width: `${percentage}%` 
+                          }}
+                        />
+                      </div>
                     </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div
-                        className={`h-2 rounded-full transition-all duration-500 ${
-                          stage === 'Wake' ? 'bg-wake' :
-                          stage === 'N1' ? 'bg-n1' :
-                          stage === 'N2' ? 'bg-n2' :
-                          stage === 'N3' ? 'bg-n3' :
-                          'bg-rem'
-                        }`}
-                        style={{ 
-                          width: `${currentData.totalEpochs > 0 
-                            ? (count / currentData.totalEpochs) * 100 
-                            : 0}%` 
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+              
+              {currentData.totalEpochs > 0 && (
+                <div className="mt-4 pt-4 border-t text-sm text-gray-500">
+                  Total epochs: {currentData.totalEpochs}
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -55,19 +55,20 @@ if os.path.exists(SHHS_PATH):
 # WebSocket connection manager
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: Dict[str, WebSocket] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, session_id: str):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[session_id] = websocket
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+    def disconnect(self, session_id: str):
+        if session_id in self.active_connections:
+            del self.active_connections[session_id]
 
-    async def broadcast(self, message: dict):
-        for connection in self.active_connections:
+    async def send_to_session(self, session_id: str, message: dict):
+        if session_id in self.active_connections:
             try:
-                await connection.send_json(message)
+                await self.active_connections[session_id].send_json(message)
             except:
                 pass
 
@@ -151,6 +152,10 @@ async def end_session(session_id: str, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
+    # Mark session as inactive IMMEDIATELY
+    session.is_active = False
+    db.commit()
+    
     # Calculate summary statistics
     epochs = db.query(SleepEpoch).filter(
         SleepEpoch.session_id == session_id
@@ -193,7 +198,6 @@ async def end_session(session_id: str, db: Session = Depends(get_db)):
         session.sleep_score = max(0, min(100, score))
     
     session.end_time = datetime.now()
-    session.is_active = False
     
     db.commit()
     db.refresh(session)
@@ -230,15 +234,37 @@ async def get_session_summary(session_id: str, db: Session = Depends(get_db)):
         end_time=session.end_time,
         duration_minutes=session.total_duration_minutes or 0,
         sleep_score=session.sleep_score or 0,
-        wake_minutes=session.wake_duration,
-        n1_minutes=session.n1_duration,
-        n2_minutes=session.n2_duration,
-        n3_minutes=session.n3_duration,
-        rem_minutes=session.rem_duration,
-        total_apnea_events=session.apnea_events,
-        ahi=session.ahi_index,
-        apnea_severity=ApneaSeverity.get_severity(session.ahi_index)
+        wake_minutes=session.wake_duration or 0,
+        n1_minutes=session.n1_duration or 0,
+        n2_minutes=session.n2_duration or 0,
+        n3_minutes=session.n3_duration or 0,
+        rem_minutes=session.rem_duration or 0,
+        total_apnea_events=session.apnea_events or 0,
+        ahi=session.ahi_index or 0,
+        apnea_severity=ApneaSeverity.get_severity(session.ahi_index or 0)
     )
+
+@app.get("/api/session/{session_id}/epochs")
+async def get_session_epochs(session_id: str, db: Session = Depends(get_db)):
+    """Get all epochs for a session to create hypnogram"""
+    epochs = db.query(SleepEpoch).filter(
+        SleepEpoch.session_id == session_id
+    ).order_by(SleepEpoch.epoch_number).all()
+    
+    if not epochs:
+        return {"epochs": []}
+    
+    return {
+        "epochs": [
+            {
+                "epoch_number": epoch.epoch_number,
+                "timestamp": epoch.timestamp,
+                "sleep_stage": epoch.sleep_stage,
+                "is_apnea": epoch.is_apnea
+            }
+            for epoch in epochs
+        ]
+    }
 
 @app.get("/api/weekly-summary", response_model=WeeklyData)
 async def get_weekly_summary(db: Session = Depends(get_db)):
@@ -282,14 +308,23 @@ async def get_weekly_summary(db: Session = Depends(get_db)):
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str, db: Session = Depends(get_db)):
     """WebSocket for real-time monitoring"""
-    await manager.connect(websocket)
+    await manager.connect(websocket, session_id)
     
     # Check if we're using real SHHS data
     session = db.query(SleepSession).filter(
         SleepSession.session_id == session_id
     ).first()
     
+    if not session:
+        await websocket.close()
+        return
+    
     using_real_data = session and session.user_id != "demo_user" and shhs_loader is not None
+    
+    # Reset data simulator for new session
+    if not using_real_data:
+        data_simulator.reset_state()  # Reset all tracking
+        logger.info(f"Starting new demo session with fresh simulator state")
     
     try:
         epoch_number = 0
@@ -297,9 +332,29 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, db: Session 
         apnea_count = 0
         
         while True:
-            logger.info(f"Processing epoch {epoch_number}")
-            # Wait 30 seconds (or less for demo)
-            await asyncio.sleep(2 if using_real_data else 5)
+            # Check if session is still active
+            db.refresh(session)
+            if not session.is_active:
+                logger.info(f"Session {session_id} has been ended, stopping WebSocket")
+                break
+            
+            # Wait - MUCH SHORTER for demo mode
+            if using_real_data:
+                await asyncio.sleep(2)  # Keep 2 seconds for real data
+            else:
+                # For demo mode, make it much faster
+                if epoch_number < 20:
+                    await asyncio.sleep(0.5)  # Very fast for first 20 epochs
+                elif epoch_number < 50:
+                    await asyncio.sleep(1)    # Fast for next 30 epochs
+                else:
+                    await asyncio.sleep(2)    # Normal speed after that
+            
+            # Check again after sleep
+            db.refresh(session)
+            if not session.is_active:
+                logger.info(f"Session {session_id} has been ended, stopping WebSocket")
+                break
             
             if using_real_data:
                 logger.info("Getting SHHS epoch data...")
@@ -327,18 +382,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, db: Session 
                     apnea_prob = 0.9 if is_apnea else 0.1
                 
             else:
-                # Generate simulated signals
-                eeg_signal, hr_signal = data_simulator.generate_epoch_data()
+                # Generate simulated signals - THIS NOW RETURNS stage and is_apnea!
+                eeg_signal, hr_signal, stage, is_apnea = data_simulator.generate_epoch_data()
                 
                 # Make predictions or simulate
                 if model_manager.sleep_stage_model and model_manager.apnea_model:
-                    stage, stage_probs = model_manager.predict_sleep_stage(eeg_signal)
-                    is_apnea, apnea_prob = model_manager.predict_apnea(eeg_signal, hr_signal)
+                    # Use models if available
+                    predicted_stage, stage_probs = model_manager.predict_sleep_stage(eeg_signal)
+                    predicted_apnea, apnea_prob = model_manager.predict_apnea(eeg_signal, hr_signal)
+                    
+                    # For demo, we trust the simulator's stage but could use model predictions
+                    # stage = predicted_stage  # Uncomment to use model predictions
+                    # is_apnea = predicted_apnea
                 else:
-                    # Demo mode with simulated predictions
-                    stage = data_simulator.simulate_sleep_stage(epoch_number)
+                    # Demo mode - use simulated values
                     stage_probs = data_simulator.simulate_stage_probs(stage)
-                    is_apnea = data_simulator.simulate_apnea(stage)
                     apnea_prob = 0.8 if is_apnea else 0.2
             
             # Update counts
@@ -365,33 +423,44 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, db: Session 
             
             # Send update to client
             update = RealtimeUpdate(
-            session_id=session_id,
-            epoch_number=epoch_number,
-            timestamp=datetime.now(),
-            current_stage=SleepStage.get_name(stage),
-            is_apnea=is_apnea,
-            total_epochs=epoch_number + 1,
-            stage_counts={
-                "Wake": stage_counts[0],
-                "N1": stage_counts[1],
-                "N2": stage_counts[2],
-                "N3": stage_counts[3],
-                "REM": stage_counts[4]
-            },
-            apnea_count=apnea_count,
-            current_ahi=current_ahi
-        )
-            logger.info(f"Update data: {update.model_dump()}")
-            logger.info(f"Broadcasting update: Stage={update.current_stage}, Epoch={epoch_number}")
-            await manager.broadcast(update.model_dump())
+                session_id=session_id,
+                epoch_number=epoch_number,
+                timestamp=datetime.now(),
+                current_stage=SleepStage.get_name(stage),
+                is_apnea=is_apnea,
+                total_epochs=epoch_number + 1,
+                stage_counts={
+                    "Wake": stage_counts[0],
+                    "N1": stage_counts[1],
+                    "N2": stage_counts[2],
+                    "N3": stage_counts[3],
+                    "REM": stage_counts[4]
+                },
+                apnea_count=apnea_count,
+                current_ahi=current_ahi
+            )
+            
+            # DETAILED LOGGING with apnea info
+            stage_name = update.current_stage
+            apnea_status = "WITH APNEA" if is_apnea else "no apnea"
+            logger.info(f"Epoch {epoch_number}: Stage={stage_name}, {apnea_status}, Total_apneas={apnea_count}, AHI={current_ahi:.1f}")
+            
+            await manager.send_to_session(session_id, update.model_dump())
+            
             epoch_number += 1
             
+            # Optional: Auto-stop after many epochs in demo mode
+            if not using_real_data and epoch_number >= 200:
+                logger.info(f"Demo mode: Reached {epoch_number} epochs, stopping")
+                break
+            
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
         logger.info(f"WebSocket disconnected for session {session_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        manager.disconnect(websocket)
+    finally:
+        manager.disconnect(session_id)
+        logger.info(f"WebSocket connection closed for session {session_id}")
 
 if __name__ == "__main__":
     import uvicorn
