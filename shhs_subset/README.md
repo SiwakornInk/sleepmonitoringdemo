@@ -1,13 +1,10 @@
-# SHHS Data Subset
+# SHHS Data Subset - Simple Version
 
-This directory contains a subset of SHHS data for demo purposes.
+This directory contains 2 complete SHHS subjects for deployment demo.
 
 ## Subjects included:
-- 200001
-- 200002
-- 200003
-- 200004
-- 200005
+- Subject 200001 (full ~8 hour recording)
+- Subject 200002 (full ~8 hour recording)
 
 ## Structure:
 ```
@@ -16,11 +13,13 @@ shhs_subset/
     +-- polysomnography/
         +-- edfs/
         |   +-- shhs1/
-        |       +-- shhs1-XXXXXX.edf (EEG/ECG signals)
+        |       +-- shhs1-200001.edf
+        |       +-- shhs1-200002.edf
         +-- annotations-events-nsrr/
             +-- shhs1/
-                +-- shhs1-XXXXXX-nsrr.xml (sleep stages & events)
+                +-- shhs1-200001-nsrr.xml
+                +-- shhs1-200002-nsrr.xml
 ```
 
 ## Usage:
-Set environment variable: SHHS_PATH=/path/to/shhs_subset
+Set environment variable: SHHS_PATH=shhs_subset

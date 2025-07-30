@@ -39,7 +39,7 @@ export default function RealTimeMonitoring() {
   useEffect(() => {
     const checkDataSource = async () => {
       try {
-        const response = await fetch('http://localhost:8000/');
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/`);
         const data = await response.json();
         setDataSourceAvailable(data.shhs_data_available || false);
         
